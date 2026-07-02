@@ -1,0 +1,120 @@
+name: SQLCipher
+
+# What go.yaml, the upstream workflow, does not cover. SQLCipher is the default
+# build, so go.yaml tests it on Linux and macOS and compiles it on Windows.
+# This adds the checks specific to this fork, and links or runs the default
+# build on the other platforms it ships on.
+
+on: [push, pull_request]
+
+jobs:
+
+  guards:
+    name: Guards and bundled sources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Guards, include switches and build constraints
+        run: ./upgrade/sqlcipher/check_guards.sh
+
+      - name: Bundled LibTomCrypt matches the pinned submodule
+        run: |
+          go run ./upgrade/sqlcipher/generate_libtomcrypt.go
+          changed=$(git status --porcelain -- internal/libtomcrypt LICENSE.LIBTOMCRYPT)
+          if [ -n "$changed" ]; then
+            echo "internal/libtomcrypt is not what the generator produces from the submodule:"
+            echo "$changed"
+            exit 1
+          fi
+
+  # `go build` of a package compiles its C code but does not link it, so the
+  # jobs below build the test binary: that is the link an application fails at.
+
+  android:
+    name: Link for Android
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goarch: arm64
+            compiler: aarch64-linux-android29-clang
+          - goarch: amd64
+            compiler: x86_64-linux-android29-clang
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Link the test binary
+        env:
+          GOOS: android
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+        run: |
+          export CC="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.compiler }}"
+          go test -c -o "$RUNNER_TEMP/sqlite3.test" .
+
+  ios:
+    name: Link for iOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      # The same flags as misc/ios/clangwrap.sh in the Go tree, for a device.
+      - name: Point cgo at the iPhoneOS SDK
+        run: |
+          cat > "$RUNNER_TEMP/ios-clang" <<'EOF'
+          #!/bin/sh
+          exec "$(xcrun --sdk iphoneos --find clang)" -arch arm64 -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" -mios-version-min=12.0 "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/ios-clang"
+          echo "CC=$RUNNER_TEMP/ios-clang" >> "$GITHUB_ENV"
+
+      - name: Compile
+        env:
+          GOOS: ios
+          GOARCH: arm64
+          CGO_ENABLED: 1
+        run: go build .
+
+      - name: Link the test binary
+        env:
+          GOOS: ios
+          GOARCH: arm64
+          CGO_ENABLED: 1
+        run: go test -c -o "$RUNNER_TEMP/sqlite3.test" .
+
+  windows:
+    name: Run on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: mingw-w64-x86_64-toolchain
+          msystem: MINGW64
+          path-type: inherit
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - uses: actions/checkout@v6
+
+      - name: Cipher tests
+        run: go test -v -run '^TestCipher' .
+        shell: msys2 {0}
