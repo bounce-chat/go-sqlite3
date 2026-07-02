@@ -150,12 +150,18 @@ func main() {
 	// Extract Amalgamation
 	for _, zf := range rAmalgamation.File {
 		var f *os.File
+		ext := false
+		header := "#if !defined(USE_LIBSQLITE3) && !defined(USE_LIBSQLCIPHER) && !defined(USE_SQLCIPHER)\n"
+		footer := "#else // USE_LIBSQLITE3 || USE_LIBSQLCIPHER || USE_SQLCIPHER\n // If users really want to link against the system sqlite3 we\n// need to make this file a noop.\n #endif"
 		switch path.Base(zf.Name) {
 		case "sqlite3.c":
 			f, err = os.Create(filepath.Join(basedir, "sqlite3-binding.c"))
 		case "sqlite3.h":
 			f, err = os.Create(filepath.Join(basedir, "sqlite3-binding.h"))
 		case "sqlite3ext.h":
+			ext = true
+			header = "#if !defined(USE_LIBSQLITE3) && !defined(USE_LIBSQLCIPHER)\n"
+			footer = "#endif // !USE_LIBSQLITE3 && !USE_LIBSQLCIPHER\n"
 			f, err = os.Create(filepath.Join(basedir, "sqlite3ext.h"))
 		default:
 			continue
@@ -168,7 +174,7 @@ func main() {
 			log.Fatal(err)
 		}
 
-		_, err = io.WriteString(f, "#ifndef USE_LIBSQLITE3\n")
+		_, err = io.WriteString(f, header)
 		if err != nil {
 			zr.Close()
 			f.Close()
@@ -185,37 +191,45 @@ func main() {
 				log.Fatal(err)
 			}
 		}
-		scanner := bufio.NewScanner(zr)
-		var werr error
-		for scanner.Scan() {
-			text := scanner.Text()
-			if text == `#include "sqlite3.h"` {
-				text = `#include "sqlite3-binding.h"
+		if ext {
+			scanner := bufio.NewScanner(zr)
+			var werr error
+			for scanner.Scan() {
+				text := scanner.Text()
+				if text == `#include "sqlite3.h"` {
+					text = `#ifdef USE_SQLCIPHER
+#include "sqlcipher-binding.h"
+#else
+#include "sqlite3-binding.h"
+#endif				
 #ifdef __clang__
 #define assert(condition) ((void)0)
 #endif
 `
+				}
+				_, werr = fmt.Fprintln(f, text)
+				if werr != nil {
+					break
+				}
 			}
-			_, werr = fmt.Fprintln(f, text)
+			// A write failure must not be masked by scanner.Err(), which
+			// reports nil in that case; either way a truncated output file
+			// must never be reported as successfully extracted.
 			if werr != nil {
-				break
+				zr.Close()
+				f.Close()
+				log.Fatal(werr)
 			}
+			err = scanner.Err()
+		} else {
+			_, err = io.Copy(f, zr)
 		}
-		// A write failure must not be masked by scanner.Err(), which
-		// reports nil in that case; either way a truncated output file
-		// must never be reported as successfully extracted.
-		if werr != nil {
-			zr.Close()
-			f.Close()
-			log.Fatal(werr)
-		}
-		err = scanner.Err()
 		if err != nil {
 			zr.Close()
 			f.Close()
 			log.Fatal(err)
 		}
-		_, err = io.WriteString(f, "#else // USE_LIBSQLITE3\n // If users really want to link against the system sqlite3 we\n// need to make this file a noop.\n #endif")
+		_, err = io.WriteString(f, footer)
 		if err != nil {
 			zr.Close()
 			f.Close()

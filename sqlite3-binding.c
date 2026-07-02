@@ -1,4 +1,4 @@
-#ifndef USE_LIBSQLITE3
+#if !defined(USE_LIBSQLITE3) && !defined(USE_LIBSQLCIPHER) && !defined(USE_SQLCIPHER)
 #if defined(_WIN32) && (!defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600)
 #undef _WIN32_WINNT
 #define _WIN32_WINNT 0x0600
@@ -271134,7 +271134,7 @@ SQLITE_API int sqlite3_stmt_init(
 SQLITE_API const char *sqlite3_sourceid(void){ return SQLITE_SOURCE_ID; }
 #endif /* SQLITE_AMALGAMATION */
 /************************** End of sqlite3.c ******************************/
-#else // USE_LIBSQLITE3
+#else // USE_LIBSQLITE3 || USE_LIBSQLCIPHER || USE_SQLCIPHER
  // If users really want to link against the system sqlite3 we
 // need to make this file a noop.
  #endif
